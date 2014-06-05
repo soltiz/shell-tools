@@ -1,0 +1,200 @@
+#!/bin/bash
+#
+# This files contains library functions used by lms-* scripts. 
+
+# return the OS type: linux or mac. 
+# Usage OS=$(lmc_get_os)
+
+
+#this function is a filter used to drop output in quiet mode
+function stdout() { if [ "${quiet:-}" != "true" ];  then cat; else true; fi ;}
+#this function is a filter used to redirect standard output from a command to error output
+function stderr() { cat >&2 ;}
+
+function debugTimestamp() { date +%Y%m%d%H%M%S ;}
+
+
+#this function is a filter used to redirect standard output from a command to lmc log flow
+function lmcLogger() {
+	if [ -z "${LMC_LOG_FILE:-}" ] ; then 
+		stdout
+	else 
+		caller="`basename ""$0""`"
+		sed "s#^#$(debugTimestamp) @ ${caller} : #g" >> "${LMC_LOG_FILE}"
+	fi 
+}
+
+#this function sends outputonly  to LMC_LOG_FILE (if defined) OR STDOUT if not defined
+
+function lmclog() { echo "$*" | lmcLogger; }
+
+#this function sends output both to stdout AND  to LMC_LOG_FILE (if defined)
+function log() { 
+	echo $* | stdout ;
+	# the following 'if' is intended to avoid duplicate logging to stdout in case we do not have a lmc log file
+	if ! [ -z "${LMC_LOG_FILE:-}" ] ; then lmclog "$*"; fi
+}
+
+
+
+function errecho() { 
+	echo "$*" >&2 ;
+	if ! [ -z "${LMC_LOG_FILE:-}" ] ; then lmclog "$*"; fi
+}
+
+function warn() { errecho "WARNING: $*" ;}
+function error() { errecho "ERROR: $*" ;}
+function fatal() { errecho "FATAL ERROR: ${*:-generic error}" ; exit -1 ;}
+
+
+function debug() { echo "$*" | lmcLogger ; }
+
+
+function lmc_get_platform() {
+	platform='unknown'
+	unamestr=`uname`
+	if [[ "$unamestr" == 'Linux' ]]; then
+		platform='linux'
+	elif [[ "$unamestr" == 'Darwin' ]]; then
+		platform='mac'
+	fi
+	echo $platform
+}
+
+#
+# Retrieve a property from a propert file. 
+function lmc_get_prop() {
+	varName=$1
+	confFile=$2
+	regex="^$1="
+   	name=`grep "$regex" ${confFile} | cut -d= -f2`
+   	# to return a string from a shell function simply use echo. 
+    echo "$name"
+}
+
+#
+# Print the common usage for all lmc scripts. 
+# Param: no arguments
+#
+function lmc_usage() {
+	errecho "" 
+	errecho "Usage: `basename $0` [--help|-h|-?]"
+	errecho "" 
+	errecho "    --start"
+	errecho "    --start-foreground"
+	errecho "    --stop"
+	errecho ""
+	if [ ! "${1:-}" == "" ]; then 
+		errecho "$1" 
+		errecho "" 
+	fi
+
+}
+
+# create a node in zk, idempotently
+function lmc_create_zk_empty_node() {
+	nodeToCreate=$1
+	( 
+		${LMC_BIN_DIR}/lmc-zookeeper-console.sh << EOF
+		create ${nodeToCreate} "empty"
+EOF
+	) | lmcLogger
+}
+
+
+# list directory
+function check_and_return_unique_file_from_pattern() {
+	namePattern=$1
+	lsOptions=${2:-}
+	#echo SEARCHING files=\$(ls ${lsOptions} "$namePattern" )
+	files="$(ls ${lsOptions} $namePattern )"
+	if [ -z "${files}" ] ; then fatal "no file matching required pattern ${namePattern} !" ;fi
+			
+	nbDirs="$(echo "$files" | wc -l)"
+	
+	if [ ${nbDirs} -gt 1 ] ;then fatal "there should be only one file matching pattern ${namePattern} !"  ;fi
+	# this is the return value (echoed to function stdout)
+	echo "$files"
+}
+
+# returns the hostname part in a string of the form hostname:port
+# the function resists to the absence of :port part
+# the second argument (optional) is a default value
+function hostFromHostColumnPort () {
+	toParse="$1"
+	defaultHost="${2:-}"
+	host=${toParse%%:*}
+	echo "${host:-${defaultHost}}"
+}
+
+# returns the port part in a string of the form hostname:port
+# the function resists to the absence of :port part
+# the second argument (optional) is a default value
+function portFromHostColumnPort () {
+	toParse="$1"
+	defaultPort="${2:-}"
+	port=${toParse##*:}
+	if [ "$port" == "$toParse" ]; then 
+		# on gere le cas ou ":xxx" est absent
+		echo "${defaultPort}"
+	else
+		# on gere le cas nominal mais aussi le cas ou ':' est present mais avec rien derriere
+		echo "${port:-${defaultPort}}"
+	fi
+}
+
+#function to dump a variable name and its value
+function dumpVar() {
+	varName="$1"
+	log "${varName}=""`eval 'echo ${'$1'}'`"""
+}
+
+# function to wait for an answer without HTTP error code, from a remote HTTP
+function waitForHttpGetAvailable () {
+	httpUrl="$1"
+	sleepStepInSeconds="$2"
+	maxOverallWaitInSeconds="$3"
+	startingTimestamp=`date +%s` 
+	let retryLimitTimestamp=startingTimestamp+maxOverallWaitInSeconds
+	succeeded=0
+	currentTimestamp=${startingTimestamp}
+	while [ ${currentTimestamp} -lt ${retryLimitTimestamp} ] ; do 
+		curl -s -o/dev/null --noproxy '*' --retry 0 -XGET "${httpUrl}" && succeeded=1 && break;
+		let remainingWait=retryLimitTimestamp-currentTimestamp
+		log "Waiting for HTTP URL ""${httpUrl}"" (will wait ${remainingWait} seconds max)..."
+		sleep ${sleepStepInSeconds}
+		currentTimestamp=`date +%s`
+	
+	done
+	[ ${succeeded} -ne 0 ]
+}
+
+function waitForPingSuccess() {
+ hostToWait="$1"
+ maxWaitInSeconds=${2:-5}
+ log -n "Waiting for PING answer from '${hostToWait}'... "
+( ping -W ${maxWaitInSeconds} -c 1 -q ${hostToWait} > /dev/null  ) || fatal "unable to ping server '${hostToWait}'"
+ log "OK"
+}
+
+function waitForSshSuccess() {
+	# usage : waitForSshSuccess [user]@<host> [<maxWaitInSeconds>] [ -c 'remote command to launch']
+ hostToWait="$1"
+ command="echo """""
+ maxWaitInSeconds=10
+ shift
+ while [ $# -gt 0 ] ; do
+
+ 	if [ "$1" == -c ]; then
+ 		command="$2"
+ 		commandLog=" using remote command '$command'"
+ 		shift 2
+ 	else
+		maxWaitInSeconds=$2
+	fi
+done
+ log -n "Waiting for SSH sucess on '${hostToWait}'${commandLog:-}... "
+( ssh ${hostToWait} -o ConnectTimeout=${maxWaitInSeconds} $command > /dev/null  ) || fatal "unable to ssh on server '${hostToWait}'"
+ log "OK"
+}
+

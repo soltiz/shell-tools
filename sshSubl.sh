@@ -3,10 +3,8 @@
 
 bindir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-lmcLibDir=${bindir}/../../lmc-dev/lmc-admin/bin
+. ${bindir}/toolsLib.source
 
-
-. ${lmcLibDir}/lmc-lib.sh
 
 # remote file should be with RCP syntax : [user]@host:path
 remoteFile=$1
