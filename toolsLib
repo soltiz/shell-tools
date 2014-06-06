@@ -19,7 +19,10 @@ function lmcLogger() {
 	if [ -z "${LMC_LOG_FILE:-}" ] ; then 
 		stdout
 	else 
-		caller="`basename ""$0""`"
+		caller=$(basename "$0" 2>/dev/null)
+		if [ "$caller" == "" ] ; then
+			caller=">$0"
+		fi
 		sed "s#^#$(debugTimestamp) @ ${caller} : #g" >> "${LMC_LOG_FILE}"
 	fi 
 }
@@ -29,10 +32,25 @@ function lmcLogger() {
 function lmclog() { echo "$*" | lmcLogger; }
 
 #this function sends output both to stdout AND  to LMC_LOG_FILE (if defined)
-function log() { 
-	echo $* | stdout ;
-	# the following 'if' is intended to avoid duplicate logging to stdout in case we do not have a lmc log file
-	if ! [ -z "${LMC_LOG_FILE:-}" ] ; then lmclog "$*"; fi
+# option -n can be provided to avoid addition of final carriage return
+# option -- can be provided to request log processing frop stdin
+function log() {
+	echoOpt="" 
+	if [ "${1:-}" == "-n" ] ; then
+		echoOpt="-n"
+		shift
+	fi
+	if [ "${1:-}" == "--" ] ; then
+		if ! [ -z "${LMC_LOG_FILE}" ] ; then
+			tee >(lmcLogger)
+		else
+			lmcLogger
+		fi
+	else
+		echo ${echoOpt} "$*" | stdout ;
+		# the following 'if' is intended to avoid duplicate logging to stdout in case we do not have a lmc log file
+		if ! [ -z "${LMC_LOG_FILE:-}" ] ; then lmclog "$*"; fi
+	fi
 }
 
 
@@ -91,14 +109,34 @@ function lmc_usage() {
 
 }
 
+# generic wait loop
+function tryLoop() {
+	maxOverallWaitInSeconds=$1
+	waitBetweenRetriesInSeconds=$2
+	command=$3
+	waitingForObjectDescription=$4
+	startingTimestamp=`date +%s` 
+	let retryLimitTimestamp=startingTimestamp+maxOverallWaitInSeconds
+	succeeded=0
+	currentTimestamp=${startingTimestamp}
+	while [ ${currentTimestamp} -lt ${retryLimitTimestamp} ] ; do 
+		eval "$command" && succeeded=1 && break;
+		let remainingWait=retryLimitTimestamp-currentTimestamp
+		errecho "Waiting for ${waitingForObjectDescription} (will wait ${remainingWait} seconds max)..."
+		sleep ${waitBetweenRetriesInSeconds}
+		currentTimestamp=`date +%s`
+	done
+	[ ${succeeded} -ne 0 ]
+}
+
+
+
 # create a node in zk, idempotently
 function lmc_create_zk_empty_node() {
 	nodeToCreate=$1
-	( 
-		${LMC_BIN_DIR}/lmc-zookeeper-console.sh << EOF
-		create ${nodeToCreate} "empty"
-EOF
-	) | lmcLogger
+
+	command='( echo "create '${nodeToCreate}' \"lmcNode\"" | ${LMC_BIN_DIR}/lmc-zookeeper-console.sh | lmcLogger ) &&  ( echo "ls '${nodeToCreate}'" | ${LMC_BIN_DIR}/lmc-zookeeper-console.sh | tail -n 3 | grep -v CONNECTED | grep -q "\[.*\]" ) '
+	tryLoop 120 10 "$command" "Zk Node '${nodeToCreate}' existence"
 }
 
 
@@ -143,10 +181,62 @@ function portFromHostColumnPort () {
 	fi
 }
 
+# function sending each of its parameters as a line to stdout
+function convertParametersToStdoutLines() {
+	while [ $# -gt 0 ] ; do
+		echo "$1"
+		shift
+	done
+}
+
+function bashArrayToLines() {
+	for line in "$@" ; do
+		echo "$line"
+	done
+}
+
+#function producing a representation of provided list
+# the produced format is of the form : [ "value1", "value2", ... , "valuen" ]
+# the input list can be provided through the parameters, or through lines on stdin by specifying parameter '--'
+function listToJsonString() {
+	if [ "${1:-}" == "--" ]; then
+		input="$(cat)"
+	else
+		input=$(bashArrayToLines "$@")
+	fi
+	if [ "$input" == "" ] ; then
+		echo '[ ]'
+	else
+		sed -e 's/\(.*\)/"\1"/' <(echo "$input")  | sed -e :a -e 'N;s/\n/, /' -e ta -e q | sed 's/\(.*\)/[ \1 ]/'
+	fi
+}
+
+logVarDefaultPrefix="        "
+logVarDefaultNamePadding=30
 #function to dump a variable name and its value
-function dumpVar() {
+function logVar() {
 	varName="$1"
-	log "${varName}=""`eval 'echo ${'$1'}'`"""
+	leftPrefix="${2:-${logVarDefaultPrefix}}"
+	namePadding="${3:-${logVarDefaultNamePadding}}"
+	log "${leftPrefix}$(rightPadding ${namePadding} ${varName}) = \"`eval 'echo ${'$varName'}'`\""
+}
+
+
+#function to dump an array variable name and its values
+function logArrayVar() {
+	varName="$1"
+	leftPrefix="${2:-${logVarDefaultPrefix}}"
+	namePadding="${3:-${logVarDefaultNamePadding}}"
+	log "${leftPrefix}$(rightPadding ${namePadding} ${varName}) = `eval 'listToJsonString ${'$varName'[@]}'`"
+}
+
+
+function waitForTcpPortAvailability() {
+	host=$1
+	port=$2
+	maxWaitInSeconds=$3
+	maxOverallWaitInSeconds=$4
+	tryLoop $3 $4 "nc -z $1 $2" "Tcp port $1:$2 availability"
 }
 
 # function to wait for an answer without HTTP error code, from a remote HTTP
@@ -154,19 +244,8 @@ function waitForHttpGetAvailable () {
 	httpUrl="$1"
 	sleepStepInSeconds="$2"
 	maxOverallWaitInSeconds="$3"
-	startingTimestamp=`date +%s` 
-	let retryLimitTimestamp=startingTimestamp+maxOverallWaitInSeconds
-	succeeded=0
-	currentTimestamp=${startingTimestamp}
-	while [ ${currentTimestamp} -lt ${retryLimitTimestamp} ] ; do 
-		curl -s -o/dev/null --noproxy '*' --retry 0 -XGET "${httpUrl}" && succeeded=1 && break;
-		let remainingWait=retryLimitTimestamp-currentTimestamp
-		log "Waiting for HTTP URL ""${httpUrl}"" (will wait ${remainingWait} seconds max)..."
-		sleep ${sleepStepInSeconds}
-		currentTimestamp=`date +%s`
-	
-	done
-	[ ${succeeded} -ne 0 ]
+	command='curl -s -o/dev/null --noproxy '*' --retry 0 -XGET "'${httpUrl}'"'
+	tryloop $maxOverallWaitInSeconds $sleepStepInSeconds "$command" "HTTP URL '${httpUrl}'"
 }
 
 function waitForPingSuccess() {
@@ -198,3 +277,50 @@ done
  log "OK"
 }
 
+#returns local IP addresses, one by line (including loopback localhost interface)
+function localIpV4Addresses() {
+	ip -4 -o addr show | sed -n 's/.*\binet\s\+\([^ ]\+\)\s.*/\1/p' | sed 's#/.*##g'
+}
+
+#for each argument received (or line from stdin, if "--" parameter is provided
+	# returns the corresponding V4 IP (or the input, if already an IP)
+function resolveIpV4Host() {
+	if [ "${1:-}" == "--" ]; then
+		input="$(cat)"
+	else
+		input=$*
+	fi
+	for hostnameOrIp in $input ; do
+		if ( echo ${hostnameOrIp} | grep -q '^[a-zA-Z]') ; then
+			# we have a hostname
+			host $hostnameOrIp | sed -n 's/.*\shas\saddress\s\+\([0-9.]*\)/\1/p'
+		else
+			# we have a host ip
+			echo ${hostnameOrIp}
+		fi
+	done 
+}
+
+# function which return value indicates if at least one word matches
+# in two lists,  with separators beeing either newlines or whitespace
+function listsHaveNonEmptyIntersection() {
+	aList=$1
+	bList=$2
+	intersection=$(comm -12 <(echo $aList | sed 's/\s\+/\n/g' | sort -u) <(echo $bList | sed 's/\s\+/\n/g'| sort -u))
+	[ "$intersection" != "" ]
+}
+
+# function which adds spaces in order to pad the provided lines to match at least provided length
+# if only one parameter is provided, stdin is used as source. If more than one, the parameters are processed instead
+function rightPadding() {
+	desiredLength=${1}
+	if [ $# == 1 ] ; then
+		sed -e :a -e 's/^.\{1,'${desiredLength}'\}$/& /;ta'
+	else
+		shift
+		while [ $# -gt 0 ] ; do
+			echo "$1" | sed -e :a -e 's/^.\{1,'${desiredLength}'\}$/& /;ta'
+			shift
+		done
+	fi
+}
