@@ -1,6 +1,8 @@
-#!/bin/bash
-#
-# This files contains library functions used by lms-* scripts. 
+#!/bin/bash -u
+# Copyright Thales Services 2014
+# Author C. VAN FRACHEM
+
+# This files contains reusable, project-independant shell functions 
 
 # return the OS type: linux or mac. 
 # Usage OS=$(lmc_get_os)
@@ -13,27 +15,27 @@ function stderr() { cat >&2 ;}
 
 function debugTimestamp() { date +%Y%m%d%H%M%S ;}
 
-
-#this function is a filter used to redirect standard output from a command to lmc log flow
-function lmcLogger() {
-	if [ -z "${LMC_LOG_FILE:-}" ] ; then 
+#this function is a filter used to redirect standard output from a command to common shells log flow
+function commonsLogger() {
+	if [ -z "${COMMONS_LOG_FILE:-}" ] ; then 
 		stdout
 	else 
 		caller=$(basename "$0" 2>/dev/null)
 		if [ "$caller" == "" ] ; then
 			caller=">$0"
 		fi
-		sed "s#^#$(debugTimestamp) @ ${caller} : #g" >> "${LMC_LOG_FILE}"
+		sed "s#^#$(debugTimestamp) @ ${caller} : #g" >> "${COMMONS_LOG_FILE}"
 	fi 
 }
 
-#this function sends outputonly  to LMC_LOG_FILE (if defined) OR STDOUT if not defined
+#this function sends outputonly  to COMMONS_LOG_FILE (if defined) OR STDOUT if not defined
 
-function lmclog() { echo "$*" | lmcLogger; }
+function silentLog() { echo "$*" | lmcLogger; }
+function unquietableLog() { quiet="false" log $@ ; }
 
 #this function sends output both to stdout AND  to LMC_LOG_FILE (if defined)
 # option -n can be provided to avoid addition of final carriage return
-# option -- can be provided to request log processing frop stdin
+# option -- can be provided to request log processing from stdin
 function log() {
 	echoOpt="" 
 	if [ "${1:-}" == "-n" ] ; then
@@ -41,15 +43,15 @@ function log() {
 		shift
 	fi
 	if [ "${1:-}" == "--" ] ; then
-		if ! [ -z "${LMC_LOG_FILE}" ] ; then
-			tee >(lmcLogger)
+		if ! [ -z "${COMMONS_LOG_FILE}" ] ; then
+			tee >(commonsLogger) | stdout
 		else
-			lmcLogger
+			commonsLogger
 		fi
 	else
 		echo ${echoOpt} "$*" | stdout ;
 		# the following 'if' is intended to avoid duplicate logging to stdout in case we do not have a lmc log file
-		if ! [ -z "${LMC_LOG_FILE:-}" ] ; then lmclog "$*"; fi
+		if ! [ -z "${COMMONS_LOG_FILE:-}" ] ; then silentLog "$*"; fi
 	fi
 }
 
@@ -57,18 +59,24 @@ function log() {
 
 function errecho() { 
 	echo "$*" >&2 ;
-	if ! [ -z "${LMC_LOG_FILE:-}" ] ; then lmclog "$*"; fi
+	if ! [ -z "${COMMONS_LOG_FILE:-}" ] ; then silentLog "$*"; fi
 }
 
-function warn() { errecho "WARNING: $*" ;}
-function error() { errecho "ERROR: $*" ;}
-function fatal() { errecho "FATAL ERROR: ${*:-generic error}" ; exit -1 ;}
+function warn() { errecho "WARNING reported by '$(basename "${0:-}")': $*" ;}
+function error() { errecho "ERROR reported by '$(basename "${0:-}")': $*" ;}
+function fatal() { errecho "FATAL ERROR in '$(basename "${0:-}")': ${*:-generic error}" ; exit -1 ;}
 
 
-function debug() { echo "$*" | lmcLogger ; }
+function debug() { echo "$*" | commonsLogger ; }
 
-
-function lmc_get_platform() {
+#
+# Returns the platform you are running on: mac or linux.
+# As of today supports only linux or mac/Darwin.
+# 
+# Arguments : none
+# Usage     : platform=$(getPlatform)
+#
+function getPlatform() {
 	platform='unknown'
 	unamestr=`uname`
 	if [[ "$unamestr" == 'Linux' ]]; then
@@ -79,37 +87,7 @@ function lmc_get_platform() {
 	echo $platform
 }
 
-#
-# Retrieve a property from a propert file. 
-function lmc_get_prop() {
-	varName=$1
-	confFile=$2
-	regex="^$1="
-   	name=`grep "$regex" ${confFile} | cut -d= -f2`
-   	# to return a string from a shell function simply use echo. 
-    echo "$name"
-}
-
-#
-# Print the common usage for all lmc scripts. 
-# Param: no arguments
-#
-function lmc_usage() {
-	errecho "" 
-	errecho "Usage: `basename $0` [--help|-h|-?]"
-	errecho "" 
-	errecho "    --start"
-	errecho "    --start-foreground"
-	errecho "    --stop"
-	errecho ""
-	if [ ! "${1:-}" == "" ]; then 
-		errecho "$1" 
-		errecho "" 
-	fi
-
-}
-
-# generic wait loop
+# generic wait loop 
 function tryLoop() {
 	maxOverallWaitInSeconds=$1
 	waitBetweenRetriesInSeconds=$2
@@ -119,24 +97,20 @@ function tryLoop() {
 	let retryLimitTimestamp=startingTimestamp+maxOverallWaitInSeconds
 	succeeded=0
 	currentTimestamp=${startingTimestamp}
+	eval "$command" && return 0
+	firstSleep=1
 	while [ ${currentTimestamp} -lt ${retryLimitTimestamp} ] ; do 
-		eval "$command" && succeeded=1 && break;
 		let remainingWait=retryLimitTimestamp-currentTimestamp
-		errecho "Waiting for ${waitingForObjectDescription} (will wait ${remainingWait} seconds max)..."
+		[ $firstSleep -ne 1 ] && errecho "Waiting for ${waitingForObjectDescription} (will wait ${remainingWait} seconds max)..."
+		firstSleep=0
 		sleep ${waitBetweenRetriesInSeconds}
+		eval "$command" && succeeded=1 && break;
 		currentTimestamp=`date +%s`
 	done
-	[ ${succeeded} -ne 0 ]
-}
-
-
-
-# create a node in zk, idempotently
-function lmc_create_zk_empty_node() {
-	nodeToCreate=$1
-
-	command='( echo "create '${nodeToCreate}' \"lmcNode\"" | ${LMC_BIN_DIR}/lmc-zookeeper-console.sh | lmcLogger ) &&  ( echo "ls '${nodeToCreate}'" | ${LMC_BIN_DIR}/lmc-zookeeper-console.sh | tail -n 3 | grep -v CONNECTED | grep -q "\[.*\]" ) '
-	tryLoop 120 10 "$command" "Zk Node '${nodeToCreate}' existence"
+	if [ $succeeded -eq 0 ] && [ $firstSleep -ne 1 ]; then
+		warn "Timeout without success for ${waitingForObjectDescription}"
+	fi
+	[ $succeeded -ne 0 ]
 }
 
 
@@ -207,7 +181,7 @@ function listToJsonString() {
 	if [ "$input" == "" ] ; then
 		echo '[ ]'
 	else
-		sed -e 's/\(.*\)/"\1"/' <(echo "$input")  | sed -e :a -e 'N;s/\n/, /' -e ta -e q | sed 's/\(.*\)/[ \1 ]/'
+		sed -e 's/\(.*\)/"\1"/' <(echo "$input")  | sed -n -e :a -e '$p;N;s/\n/, /' -e ta -e q | sed 's/\(.*\)/[ \1 ]/'
 	fi
 }
 
@@ -234,9 +208,9 @@ function logArrayVar() {
 function waitForTcpPortAvailability() {
 	host=$1
 	port=$2
-	maxWaitInSeconds=$3
-	maxOverallWaitInSeconds=$4
-	tryLoop $3 $4 "nc -z $1 $2" "Tcp port $1:$2 availability"
+	sleepBetweenTrials=${3:-3}
+	maxOverallWaitInSeconds=${4:-60}
+	tryLoop $sleepBetweenTrials $maxOverallWaitInSeconds "nc -z $1 $2" "Tcp port $1:$2 availability"
 }
 
 # function to wait for an answer without HTTP error code, from a remote HTTP
@@ -279,7 +253,12 @@ done
 
 #returns local IP addresses, one by line (including loopback localhost interface)
 function localIpV4Addresses() {
-	ip -4 -o addr show | sed -n 's/.*\binet\s\+\([^ ]\+\)\s.*/\1/p' | sed 's#/.*##g'
+	platform=$(getPlatform)
+	if [ "$platform" == "mac" ]; then
+		ifconfig | awk '/inet / {print $2}'
+	else
+		ip -4 -o addr show | sed -n 's/.*\binet\s\+\([^ ]\+\)\s.*/\1/p' | sed 's#/.*##g'
+	fi
 }
 
 #for each argument received (or line from stdin, if "--" parameter is provided
@@ -293,7 +272,7 @@ function resolveIpV4Host() {
 	for hostnameOrIp in $input ; do
 		if ( echo ${hostnameOrIp} | grep -q '^[a-zA-Z]') ; then
 			# we have a hostname
-			host $hostnameOrIp | sed -n 's/.*\shas\saddress\s\+\([0-9.]*\)/\1/p'
+			python -c "import socket;print socket.gethostbyname('$hostnameOrIp');"
 		else
 			# we have a host ip
 			echo ${hostnameOrIp}
@@ -306,21 +285,131 @@ function resolveIpV4Host() {
 function listsHaveNonEmptyIntersection() {
 	aList=$1
 	bList=$2
-	intersection=$(comm -12 <(echo $aList | sed 's/\s\+/\n/g' | sort -u) <(echo $bList | sed 's/\s\+/\n/g'| sort -u))
+	intersection=$(comm -12 <(echo "$aList" | sed 's/\s\+/\n/g' | sort -u) <(echo "$bList" | sed 's/\s\+/\n/g'| sort -u))
 	[ "$intersection" != "" ]
 }
 
 # function which adds spaces in order to pad the provided lines to match at least provided length
 # if only one parameter is provided, stdin is used as source. If more than one, the parameters are processed instead
+defaultPaddingChar=' '
 function rightPadding() {
+	paddingChar=$defaultPaddingChar
+	if [ "${1:-}" == "--padding-char" ]; then
+		paddingChar=${2:-.}
+		shift 2
+	fi
 	desiredLength=${1}
 	if [ $# == 1 ] ; then
 		sed -e :a -e 's/^.\{1,'${desiredLength}'\}$/& /;ta'
 	else
 		shift
 		while [ $# -gt 0 ] ; do
-			echo "$1" | sed -e :a -e 's/^.\{1,'${desiredLength}'\}$/& /;ta'
+			echo "$1" | sed -e :a -e "s/^.\{1,${desiredLength}\}$/&${paddingChar}/;ta"
 			shift
 		done
 	fi
 }
+
+# function that checks if one of the ip addresses of local host is included in the provided list
+# hostnames in the list are resolved to IPV4 names automatically, and port number prefixes are ignored
+# (such as myhost:3000,otherhost:18000). separators can be spaces or commas
+function currentHostIsInHostList() {
+	ipsToScan=$(echo "${1:-}" | tr "," " " | sed 's/:[0-9]*//g' | resolveIpV4Host -- )
+    listsHaveNonEmptyIntersection "${ipsToScan}" "$(localIpV4Addresses)"
+}
+
+
+function queryJsonConf() {
+    jsonQuery=$1
+    jsonData=${2:-}
+    if [ "${jsonData}" == "" ]; then
+    	if [ "${JSON_CONFIG:-}" == "" ]; then
+    		error "JSON_CONFIG variable is not define to provide a default json configuration source file for 'queryJsonConf' function."
+    		return 1
+    	fi
+        dataSource="file '$JSON_CONFIG'."
+        jsonData=$(cat "$JSON_CONFIG")
+    else
+        dataSource="string '$jsonData'"
+    fi
+    echo "$jsonData" | jq --compact-output "$jsonQuery" || error "Could not execute json query '$jsonQuery' on ${dataSource}."
+}
+
+function getJsonConfValue () {
+    jsonPath=$1
+    jsonData=${2:-}
+    errorString="Could not retrieve string matching json path '$jsonPath."
+    answer=$(queryJsonConf "$jsonPath" "$jsonData") || error "${errorString}"
+    if [ "$answer" == "null" ]; then
+        error "$errorString"
+    else
+        echo "$answer" | sed 's/^"\(.*\)"$/\1/g'
+    fi
+}
+
+function getJsonConfArrayValues () {
+    jsonPath=$1
+    jsonData=${2:-}
+    errorString="Could not retrieve string matching json path '$jsonPath."
+    answer=$(queryJsonConf "$jsonPath" "$jsonData") || error "${errorString}"
+    if [ "$answer" == "null" ]; then
+        error "$errorString"
+    else
+        echo "$answer" | sed 's/^"\(.*\)"$/\1/g'
+    fi
+}
+
+function jinja2TemplateInstanciation () {
+	templateFile=$1
+	[ -f "$templateFile" ] || fatal "Not able to find jinja2 template '${templateFile}'."
+	python -c "import jinja2" || fatal "Python and python-jinja2 must be available in order to use 'jinja2TemplateInstanciation' function." 
+	containerDir=$(dirname "$templateFile")
+	templateName=$(basename "$templateFile")
+	python -c "import jinja2; import os ; env=jinja2.Environment(loader=jinja2.FileSystemLoader(\"${containerDir}\")); env.globals.update(os.environ); template=env.get_template(\"${templateName}\");print template.render();"
+}
+
+
+
+
+# function to replace all symbolic links in the provided 
+function getRealPath() {
+	pathToCorrect=$1
+	if [ -d "$pathToCorrect" ]; then
+		( cd "$pathToCorrect" ; pwd -P )
+	else
+		error "function getRealPath not implemented for something else than an existing directory ; '$pathToCorrect' was provided."
+		echo "InvalidPathProvidedToFunction_getRealPath:$pathToCorrect"
+	fi
+}
+
+#function that prompts the user with a yes/no question (provided)
+#first keystroke is the user answer
+#case is ignored
+# default behaviour if return is pressed is "No", except if parameter 2
+# indicated "Y" as the default answer
+function userConfirmationByYKey() {
+	question=$1
+	defaultAnswer=${2:-N}
+	read -p "$question " -N 1 answer
+	echo ""
+	if [ "$answer" == "" ]; then answer=$defaultAnswer; fi
+	[ "$answer" == "y" ] || [ "$answer" == "Y" ]
+}
+
+function absolutePath() {
+	echo $(cd $(dirname "$1"); pwd)/$(basename "$1")
+}
+
+#filter which get rids of lines beginning with # (with whitespaces bedore #)
+function uncomment() {
+	grep -v '^\s*#' $@
+}
+
+# provide normalized printout for terse service status
+function terseStatusReport() {
+	serviceName=$1
+	status=$2
+	report=$(rightPadding --padding-char . 40 "$serviceName")$status
+	log "$report"
+}
+
