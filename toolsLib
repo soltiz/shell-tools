@@ -390,7 +390,7 @@ function getRealPath() {
 function userConfirmationByYKey() {
 	question=$1
 	defaultAnswer=${2:-N}
-	read -p "$question " -N 1 answer
+	read -p "$question " -n 1 answer
 	echo ""
 	if [ "$answer" == "" ]; then answer=$defaultAnswer; fi
 	[ "$answer" == "y" ] || [ "$answer" == "Y" ]
