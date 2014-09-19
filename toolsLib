@@ -1,73 +1,7 @@
 #!/bin/bash -u
 # Copyright Thales Services 2014
 # Author C. VAN FRACHEM
-
 # This files contains reusable, project-independant shell functions 
-
-# return the OS type: linux or mac. 
-# Usage OS=$(lmc_get_os)
-
-
-#this function is a filter used to drop output in quiet mode
-function stdout() { if [ "${quiet:-}" != "true" ];  then cat; else true; fi ;}
-#this function is a filter used to redirect standard output from a command to error output
-function stderr() { cat >&2 ;}
-
-function debugTimestamp() { date +%Y%m%d%H%M%S ;}
-
-#this function is a filter used to redirect standard output from a command to common shells log flow
-function commonsLogger() {
-	if [ -z "${COMMONS_LOG_FILE:-}" ] ; then 
-		stdout
-	else 
-		caller=$(basename "$0" 2>/dev/null)
-		if [ "$caller" == "" ] ; then
-			caller=">$0"
-		fi
-		sed "s#^#$(debugTimestamp) @ ${caller} : #g" >> "${COMMONS_LOG_FILE}"
-	fi 
-}
-
-#this function sends outputonly  to COMMONS_LOG_FILE (if defined) OR STDOUT if not defined
-
-function silentLog() { echo "$*" | lmcLogger; }
-function unquietableLog() { quiet="false" log $@ ; }
-
-#this function sends output both to stdout AND  to LMC_LOG_FILE (if defined)
-# option -n can be provided to avoid addition of final carriage return
-# option -- can be provided to request log processing from stdin
-function log() {
-	echoOpt="" 
-	if [ "${1:-}" == "-n" ] ; then
-		echoOpt="-n"
-		shift
-	fi
-	if [ "${1:-}" == "--" ] ; then
-		if ! [ -z "${COMMONS_LOG_FILE}" ] ; then
-			tee >(commonsLogger) | stdout
-		else
-			commonsLogger
-		fi
-	else
-		echo ${echoOpt} "$*" | stdout ;
-		# the following 'if' is intended to avoid duplicate logging to stdout in case we do not have a lmc log file
-		if ! [ -z "${COMMONS_LOG_FILE:-}" ] ; then silentLog "$*"; fi
-	fi
-}
-
-
-
-function errecho() { 
-	echo "$*" >&2 ;
-	if ! [ -z "${COMMONS_LOG_FILE:-}" ] ; then silentLog "$*"; fi
-}
-
-function warn() { errecho "WARNING reported by '$(basename "${0:-}")': $*" ;}
-function error() { errecho "ERROR reported by '$(basename "${0:-}")': $*" ;}
-function fatal() { errecho "FATAL ERROR in '$(basename "${0:-}")': ${*:-generic error}" ; exit -1 ;}
-
-
-function debug() { echo "$*" | commonsLogger ; }
 
 #
 # Returns the platform you are running on: mac or linux.
@@ -86,6 +20,187 @@ function getPlatform() {
 	fi
 	echo $platform
 }
+platform=$(getPlatform)
+
+#
+# Returns the java version. If no java is found, returns "-1"
+# TODO also check it's jdk from sun, not openjdk
+#
+function get_java_version() {
+	if type -p java >/dev/null; then
+    	_java=java
+	elif [[ -n "$JAVA_HOME:-" ]] && [[ -x "$JAVA_HOME/bin/java" ]];  then
+    	_java="$JAVA_HOME/bin/java"
+	else
+    	echo "-1"
+	fi
+    version=$("$_java" -version 2>&1 | awk -F '"' '/version/ {print $2}')
+    echo "$version"
+}
+
+#this function is a filter used to drop output in quiet mode
+function stdout() { if [ "${quiet:-}" != "true" ]; then cat; else true; fi ;}
+#this function is a filter used to redirect standard output from a command to error output
+function stderr() { cat >&2 ;}
+
+function debugTimestamp() { date +%Y%m%d%H%M%S ;}
+
+#this function is a filter used to redirect standard output from a command to common shells log flow
+function commonsLogger() {
+	if [ -z "${COMMONS_LOG_FILE:-}" ] ; then 
+		stdout
+	else 
+		caller=$(basename "$0" 2>/dev/null)
+		if [ "$caller" == "" ] ; then
+			caller=">$0"
+		fi
+		export caller
+		export timestamp=$(debugTimestamp)
+		#sed "s#^#$(debugTimestamp) @ ${caller} : #g" >> "${COMMONS_LOG_FILE}"
+		awk '{printf("%s @ %s : %s\n",ENVIRON["timestamp"], ENVIRON["caller"],$0)}' >> "${COMMONS_LOG_FILE}"
+	fi 
+}
+
+
+function errorLogger() {
+	if [ -z "${COMMONS_LOG_FILE:-}" ] ; then 
+		stderr
+	else 
+		caller=$(basename "$0" 2>/dev/null)
+		if [ "$caller" == "" ] ; then
+			caller=">$0"
+		fi
+		export caller
+		export timestamp=$(debugTimestamp)
+		#on evite les doublons de prefixes "ERROR:"
+		sed 's/^\s*ERROR\s*:\s*//g' | awk '{printf("%s @ %s ERROR: %s\n",ENVIRON["timestamp"], ENVIRON["caller"],$0)}' >> "${COMMONS_LOG_FILE}"
+#		sed "s#^#$(debugTimestamp) @ ${caller} ERROR : #g" >> "${COMMONS_LOG_FILE}"
+	fi 
+
+}
+
+#this function sends outputonly  to COMMONS_LOG_FILE (if defined) OR STDOUT if not defined
+
+function silentLog() { echo "$*" | commonsLogger; }
+function unquietableLog() { quiet="false" log $@ ; }
+
+#this function sends output both to stdout AND  to LMC_LOG_FILE (if defined)
+# option -n can be provided to avoid addition of final carriage return
+# option -- can be provided to request log processing from stdin
+function log() {
+	echoOpt="" 
+	if [ "${1:-}" == "-n" ] ; then
+		echoOpt="-n"
+		shift
+	fi
+	if [ "${1:-}" == "--" ] ; then
+		if ! [ -z "${COMMONS_LOG_FILE:-}" ] ; then
+			tee >(commonsLogger) | stdout
+		else
+			commonsLogger
+		fi
+	else
+		echo ${echoOpt} "$*" | stdout ;
+		# the following 'if' is intended to avoid duplicate logging to stdout in case we do not have a lmc log file
+		if ! [ -z "${COMMONS_LOG_FILE:-}" ] ; then silentLog "$*"; fi
+	fi
+}
+
+
+
+function errecho() { 
+	echo "$*" >&2 ;
+	if ! [ -z "${COMMONS_LOG_FILE:-}" ] ; then echo "$*" | errorLogger; fi
+}
+
+#
+# return a string with filename:line-number of the caller (from bash stack)
+# This is handy for all error traces. 
+#  
+# @return a string. 
+#
+function shortBashContext() {
+  	bashRootCommand=`basename ${0:-}`
+  	framesToIgnore=${1:-0}
+  	bashFile=`basename ${BASH_SOURCE[$((2+framesToIgnore))]}`
+  	bashLineNum=${BASH_LINENO[$((1+framesToIgnore))]}
+  	bashFuncName=${FUNCNAME[$((2+framesToIgnore))]}
+
+  	# Cedric ? a less verbose version here .. 
+  	if [ "$bashRootCommand" == "$bashFile" ]; then
+  		computedShortContext="$bashFile:$bashLineNum"
+  	else
+  		computedShortContext="$bashRootCommand:$bashFile:$bashLineNum"
+  	fi
+  	echo "$computedShortContext"
+  	
+  	#computedShortContext="while running '$bashRootCommand', at line $bashLineNum in function $bashFuncName() in file '$bashFile'."
+	#echo "$computedShortContext"
+}
+
+function warn() { errecho $(FG YELLOW "WARNING: $*" ) ;}
+function error() { 
+	echoOpt="" 
+	if [ "${1:-}" == "-n" ] ; then
+		echoOpt="-n"
+		shift
+	fi
+	if [ "${1:-}" == "--" ] ; then
+		if [ "${2:-}" == "--no-context" ]; then
+			export errorContext=""
+			shift
+		else
+			nbFramesToIgnore=${2:-} 
+			export errorContext=$(DIMMED "$(shortBashContext $nbFramesToIgnore)")
+		fi
+
+		if ! [ -z "${COMMONS_LOG_FILE}" ] ; then
+			tee >(errorLogger) | awk '{printf("%s %s\n",$0,ENVIRON["errorContext"])}' | stderr
+		else
+			errorLogger
+		fi
+	else
+		if [ "${1:-}" == "--print-stack" ] ; then
+			printStack=true
+			shift
+		fi
+		if [ "${1:-}" == "--no-context" ] ; then
+			errorContext=""
+			shift
+		else
+			errorContext=" $(shortBashContext)"
+		fi
+		errecho $(FG RED "ERROR: ${*}") $(DIMMED "${errorContext}") ;
+		# quand il s'agit d'une erreur ponctuelle, et non d'une redirection de flux
+		# (i.e. quand on n'a pas l'option --) on dumpe la stack bash
+		if  [ "${printStack:-}" == "true" ]; then
+			bashStack | errorLogger
+		fi
+	fi
+
+
+}
+function fatal() { 
+	errecho $(FG RED $(BOLD "FATAL ERROR ${*:-generic error}")) $(DIMMED "$(shortBashContext)") ; 
+	bashStack | errorLogger
+	exit -1 ;
+}
+
+# this function is used to catch stdout and stderr of the command, and
+# send them respectively to the "log --" filter an "error --" filter.
+# the overall return status is the return status of the command
+function loggedCommand() { 
+	command=("$@"); 
+	# on desactive le fichier de log pour éviter les doublons
+	# car on veut tout attraper à ce niveau ci (y compris les flots
+	# d'erreur non générés par des commandes normalisées...)
+	{ unset COMMONS_LOG_FILE; { "${command[@]}" 2>&8 ; export rc=${PIPESTATUS[0]} ; } | log -- ;  } 8>&1 1>&2 | error -- -1
+	return $rc
+}
+
+function debug() { echo "$@" | commonsLogger ; }
+
+
 
 # generic wait loop 
 function tryLoop() {
@@ -120,13 +235,21 @@ function check_and_return_unique_file_from_pattern() {
 	lsOptions=${2:-}
 	#echo SEARCHING files=\$(ls ${lsOptions} "$namePattern" )
 	files="$(ls ${lsOptions} $namePattern )"
-	if [ -z "${files}" ] ; then fatal "no file matching required pattern ${namePattern} !" ;fi
+	local rc=0
+	if [ -z "${files}" ] ; then 
+		error "no file matching required pattern ${namePattern} !" 
+		rc=1
+	fi
 			
 	nbDirs="$(echo "$files" | wc -l)"
 	
-	if [ ${nbDirs} -gt 1 ] ;then fatal "there should be only one file matching pattern ${namePattern} !"  ;fi
+	if [ ${nbDirs} -gt 1 ] ;then 
+		error "there should be only one file matching pattern ${namePattern} !"  
+		rc=2
+	fi
 	# this is the return value (echoed to function stdout)
-	echo "$files"
+	echo "$files" | awk '{print $1}'
+	return $rc
 }
 
 # returns the hostname part in a string of the form hostname:port
@@ -201,7 +324,7 @@ function logArrayVar() {
 	varName="$1"
 	leftPrefix="${2:-${logVarDefaultPrefix}}"
 	namePadding="${3:-${logVarDefaultNamePadding}}"
-	log "${leftPrefix}$(rightPadding ${namePadding} ${varName}) = `eval 'listToJsonString ${'$varName'[@]}'`"
+	log "${leftPrefix}$(rightPadding ${namePadding} ${varName}) = `eval 'listToJsonString "${'$varName'[@]}"'`"
 }
 
 
@@ -210,16 +333,16 @@ function waitForTcpPortAvailability() {
 	port=$2
 	sleepBetweenTrials=${3:-3}
 	maxOverallWaitInSeconds=${4:-60}
-	tryLoop $sleepBetweenTrials $maxOverallWaitInSeconds "nc -z $1 $2" "Tcp port $1:$2 availability"
+	tryLoop  $maxOverallWaitInSeconds $sleepBetweenTrials "nc -z $1 $2" "Tcp port $1:$2 availability"
 }
 
 # function to wait for an answer without HTTP error code, from a remote HTTP
 function waitForHttpGetAvailable () {
 	httpUrl="$1"
-	sleepStepInSeconds="$2"
-	maxOverallWaitInSeconds="$3"
-	command='curl -s -o/dev/null --noproxy '*' --retry 0 -XGET "'${httpUrl}'"'
-	tryloop $maxOverallWaitInSeconds $sleepStepInSeconds "$command" "HTTP URL '${httpUrl}'"
+	sleepStepInSeconds="${2:-3}"
+	maxOverallWaitInSeconds="${3:-60}"
+	command='curl -s -o /dev/null --noproxy '*' --retry 0 -XGET "'${httpUrl}'"'
+	tryLoop $maxOverallWaitInSeconds $sleepStepInSeconds "$command" "HTTP URL '${httpUrl}'"
 }
 
 function waitForPingSuccess() {
@@ -272,12 +395,18 @@ function resolveIpV4Host() {
 	for hostnameOrIp in $input ; do
 		if ( echo ${hostnameOrIp} | grep -q '^[a-zA-Z]') ; then
 			# we have a hostname
-			python -c "import socket;print socket.gethostbyname('$hostnameOrIp');"
+			python -c "import socket;print socket.gethostbyname('$hostnameOrIp');" 2> >(errorLogger)
+			if [ $? -ne 0 ]; then
+				error "Unable to Resolve hostname '$hostnameOrIp'"
+				echo ${hostnameOrIp}
+				return 1
+			fi
 		else
 			# we have a host ip
 			echo ${hostnameOrIp}
 		fi
 	done 
+	return 0
 }
 
 # function which return value indicates if at least one word matches
@@ -314,10 +443,9 @@ function rightPadding() {
 # hostnames in the list are resolved to IPV4 names automatically, and port number prefixes are ignored
 # (such as myhost:3000,otherhost:18000). separators can be spaces or commas
 function currentHostIsInHostList() {
-	ipsToScan=$(echo "${1:-}" | tr "," " " | sed 's/:[0-9]*//g' | resolveIpV4Host -- )
+	ipsToScan=$(echo "${*:-}" | tr "," " " | sed 's/:[0-9]*//g' | resolveIpV4Host -- )
     listsHaveNonEmptyIntersection "${ipsToScan}" "$(localIpV4Addresses)"
 }
-
 
 function queryJsonConf() {
     jsonQuery=$1
@@ -331,20 +459,40 @@ function queryJsonConf() {
         jsonData=$(cat "$JSON_CONFIG")
     else
         dataSource="string '$jsonData'"
-    fi
+    fi    
     echo "$jsonData" | jq --compact-output "$jsonQuery" || error "Could not execute json query '$jsonQuery' on ${dataSource}."
 }
 
+
+# getJsonConfValue <Jq Filter expression> [ --default <default value> ] [ json string]
+# this function retrieves the requested json parts from either a provided json string
+# or from the default $JSON_CONFIG file (see queryJsonConf)
+# A default value can be provided in case the jq filter returns null
 function getJsonConfValue () {
-    jsonPath=$1
-    jsonData=${2:-}
-    errorString="Could not retrieve string matching json path '$jsonPath."
-    answer=$(queryJsonConf "$jsonPath" "$jsonData") || error "${errorString}"
+	local jsonPath=$1
+    shift
+    local hasDefaultValue=false
+    if [ "${1:-}" == "--default" ]; then
+    	local defaultConfValue=$2
+    	#we have to use an explicit boolean variable to track default value presence
+    	#because a default value could be null string!!!
+    	local hasDefaultValue=true
+    	shift 2
+    fi
+    local jsonData=${1:-}
+    local errorString="Could not retrieve string matching json path '$jsonPath."
+    local answer=$(queryJsonConf "$jsonPath" "$jsonData") || error "${errorString}"
     if [ "$answer" == "null" ]; then
-        error "$errorString"
+    	if [ $hasDefaultValue == true ]; then
+    		echo "$defaultConfValue"
+    	else
+        	error "$errorString"
+        	return 1
+        fi
     else
         echo "$answer" | sed 's/^"\(.*\)"$/\1/g'
     fi
+    return 0
 }
 
 function getJsonConfArrayValues () {
@@ -409,7 +557,303 @@ function uncomment() {
 function terseStatusReport() {
 	serviceName=$1
 	status=$2
-	report=$(rightPadding --padding-char . 40 "$serviceName")$status
+	paddingCharsNb=${3:-40}
+	report=$(rightPadding --padding-char . $paddingCharsNb "$serviceName")$status
 	log "$report"
 }
 
+
+
+# returns bash Call Stack
+function bashStack () {
+    echo "Bash Stack (last line is the most precise context) :"
+    echo "-------		---------------------------------------------"
+  stackFramesNb=${#BASH_LINENO[@]}
+  # we do not need lowest level (bashStack itself)
+ for ((level=stackFramesNb-1; level>1; level--)); do
+  	bashLineNum=${BASH_LINENO[level-1]}
+  		bashFile=${BASH_SOURCE[level]}
+  	if [ "$bashFile" != "" ] && [ ${bashLineNum:-0} -gt 0 ]; then
+  		bashFuncName=${FUNCNAME[level]}
+  		#echo ">>>>> $bashLineNum XX $bashFile YY $bashFuncName" >&2
+  		bashSourceLine=$( sed -n "${bashLineNum}p" "$bashFile")
+  		echo "$bashFile:$bashLineNum:$bashFuncName():  $bashSourceLine"
+  	else
+  		echo "<CommandLine>"
+  	fi
+  done
+      echo "----------------------------------------------------"
+}
+
+function hostFromUrl() {
+	url=$1
+	urlWithoutProtocol=${url#*//}
+	serverMayBeWithPortAndUser=${urlWithoutProtocol%%/*}
+	serverMayBeWithPort=${serverMayBeWithPortAndUser#*@}
+	echo "${serverMayBeWithPort%:*}"
+}
+
+function portFromUrl() {
+	url=$1
+	defaultPort=${2:-}
+	urlWithoutProtocol=${url#*//}
+	serverMayBeWithPortAndUser=${urlWithoutProtocol%%/*}
+	serverMayBeWithPort=${serverMayBeWithPortAndUser#*@}
+	portOrServer=${serverMayBeWithPort#*:}
+	if [ "$portOrServer" == "$serverMayBeWithPort" ]; then
+		#no port indicated, we still have the server string
+		echo "$defaultPort"
+	else
+		echo "$portOrServer"
+	fi
+}
+
+function applyOneArgFunctionToManyArgs() {
+	functionName=$1
+	shift
+	rc_applyOneArgFunctionToManyArgs=0
+	if [ $# -eq 0 ]; then
+		# args are coming from standard input, one arg by line
+		while read line; do
+			$functionName "$line"
+			tempRc=$?
+			if ! [ -z $tempRc ]; then
+				rc_applyOneArgFunctionToManyArgs=$tempRc
+			fi
+		done
+	else
+		# args are on the command line
+		while [ $# -gt 0 ]; do
+			$functionName "$1"
+			tempRc=$?
+			if ! [ -z $tempRc ]; then
+				rc_applyOneArgFunctionToManyArgs=$tempRc
+			fi
+			shift
+		done
+	fi
+	return $rc_applyOneArgFunctionToManyArgs
+}
+
+function hostsFromUrls () { 
+	applyOneArgFunctionToManyArgs hostFromUrl "$@" 
+}
+
+function dumpArrayVarOneByLine() {
+	arrayVarName=$1
+	nbValues=$(eval 'echo ${#'$arrayVarName'[@]}')
+	pos=0
+	while [ $pos -lt $nbValues ]; do
+		eval 'echo ${'$arrayVarName'['$pos']}'
+		let pos=pos+1
+	done
+}
+
+
+function arrayVarsUnion() {
+	( while [ $# -gt 0 ]; do
+		dumpArrayVarOneByLine $1
+		shift
+	done ) | sort -u
+}
+
+
+function sshWithLocalizedOutput() {
+	hostonly=$(rightPadding 8 ${1#*@} )
+	ssh "$@" 2>&1 	| sed "s/^/$hostonly> /g" 
+	return ${PIPESTATUS[0]}
+}
+
+
+
+
+# parallel execution of the same command for several hosts
+# first param : the bash variable name of an array containing the hosts
+#    these hosts can be of the form  user@host if needed.
+# second param : the command name.
+# next params: additional params that will be added for each command, after
+#     the command name and the host
+function machinesParallelCommand() {
+	previousExitTrapCode_machinesParallelCommand=$(currentTrapCommand EXIT)
+	machinesList=($(eval 'echo ${'$1'[@]}'))
+	shift
+	theLoopCommand=$1
+	if [ "${user:-}" == "" ]; then
+		userOpt=""
+	else
+		userOpt=${user}@
+	fi
+	shift
+	theLoopParameters=("$@")
+	loopPids=()
+
+	function on_shell_exit_machinesParallelCommand() {
+		l=0
+		for launchedPid in ${loopPids[@]}; do
+			if ( ps -p $launchedPid > /dev/null); then
+				machine=${machinesList[l]}
+				errecho "Killing remaining process $launchedPid launched for machine $machine..."
+				kill $launchedPid
+				warning "Subprocess execution of "$theLoopCommand" $userOpt$machine "${theLoopParameters[@]}" has been interrupted by shell exit."
+			fi
+			let l=l+1
+		done
+		# execute original trap treatment
+		eval "$previousExitTrapCode_machinesParallelCommand"
+	}
+
+	# install trap treatment for killing subprocesses
+	trap on_shell_exit_machinesParallelCommand EXIT
+
+	for machine in ${machinesList[@]}; do
+		( $theLoopCommand $user@$machine "${theLoopParameters[@]}" ; rc=$? ;  debug "$theLoopCommand $user@$machine ${theLoopParameters[@]} => finished with RC=$rc" ; exit $rc )&
+		loopPids+=($!) ;
+	done
+	if ! wait ${loopPids[@]} ; then
+		l=0
+		for machine in ${machinesList[@]}; do
+			wait ${loopPids[l]}
+			rc=$?
+			if [ $rc -ne 0 ]; then
+				error --no-context "Execution on machine '$machine' returned '$rc'."
+			fi
+			let l=l+1
+		done
+		fatal "At least one machine failed on command >>> $theLoopCommand <machine> ${theLoopParameters[@]} <<<"
+		return 1
+	fi
+	# remove trap treatment
+	trap "$previousExitTrapCode_machinesParallelCommand" EXIT
+	return 0
+}
+
+
+
+# test if first parameter is one of the values in the array variable which name is provided as
+#   second parameter
+function valueIsInArray () {
+  searchedValue=$1
+  arrayName=$2
+  dumpArrayVarOneByLine $2 | grep -Fxq "$searchedValue"	
+}
+
+function tputColorCode() {
+	colorName=${1:-DEFAULT}
+	tput_color_BLACK=0
+	tput_color_RED=1
+	tput_color_GREEN=2
+	tput_color_YELLOW=3
+	tput_color_BLUE=4
+	tput_color_MAGENTA=5
+	tput_color_CYAN=6
+	tput_color_WHITE=7
+	tput_color_DEFAULT=9
+	eval 'echo -n ${tput_color_'$colorName':-7}'
+}
+
+
+# when echoed, changes foreground color
+#if only a color name is provided, then foreground is changed
+#if other parameters are provided, they are echoed with requested background, and
+# then default background color is restored  (as FG DEFAULT)
+function FG() {
+	if [ -z "${NOCOLOR:-}" ]; then
+		colorName=${1:-DEFAULT}
+		tput setaf	 $(tputColorCode $colorName)
+	fi
+	shift
+	if  [ $# -ne 0 ]; then
+		echo -n "$@"
+		# we are in the case where parameters to echo are provided explicitely
+		# which pin the color is to be applied only to the provided parameters
+		# therefore we restore automatically the default color at the end of the provided
+		# parameters :
+		if [ -z "${NOCOLOR:-}" ]; then
+			if [ "$TERM" == "xterm-256color" ]; then
+				tput setaf 256
+			else
+				tput setaf 9
+			fi
+		fi
+	fi
+}
+function BG() {
+	if [ -z "${NOCOLOR:-}" ]; then
+		colorName=${1:-DEFAULT}
+		tput setab	 $(tputColorCode $colorName)
+	fi
+	shift
+	if  [ $# -ne 0 ]; then
+		echo -n "$@"
+		# we are in the case where parameters to echo are provided explicitely
+		# which pin the color is to be applied only to the provided parameters
+		# therefore we restore automatically the default color at the end of the provided
+		# parameters :
+		if [ -z "${NOCOLOR:-}" ]; then
+			if [ "$TERM" == "xterm-256color" ]; then
+				tput setab 256
+			else
+				tput setab 9
+			fi
+		fi
+	fi
+}
+
+
+# each time it is called, 
+# this function defines 2 functions, that activate and deactivate
+# an ansi Flag using the provided code
+# the functions name will be FLAG and NOFLAG wher FLAG is parameter 1
+# if function FLAG is provided any parameters, then the ANSI flag
+# will be applied, then parameters echoed, then NOFLAG called
+# e.g. 
+#    defineAnsiFlagFunctions BOLD 'tput smul' 'tput rmul'
+#    echo "this is an $(BOLD important info) and this one is not so important."
+# in both cases, the functions will not set the ANSI flag
+# if the NOCOLOR environment variable is set to any non empty value
+function defineAnsiFlagFunctions(){
+	ansiFlagFuncName=$1
+	flagActivateCode=$2
+	flagDeactivateCode=$3
+	reverseFuncName=NO$ansiFlagFuncName
+	eval 'function '${ansiFlagFuncName}'(){
+		[ -z "${NOCOLOR:-}" ] && '${flagActivateCode}';
+		[ $# -ne 0 ] && echo -n "$@" && '${reverseFuncName}';  }' 
+	eval 'function '${reverseFuncName}'(){ [ -z "${NOCOLOR:-}" ] && '$flagDeactivateCode' ; }'
+}
+
+if [ "$TERM" == "xterm-256color" ]; then
+	defineAnsiFlagFunctions STRIKEDOUT 'echo -en "\x1B[9m"' 'echo -en "\e[29m"'
+	defineAnsiFlagFunctions UNDERLINED 'tput smul' 'tput rmul'
+	defineAnsiFlagFunctions REVERSED 'echo -en "\x1B[7m"' 'tput sgr0'
+	defineAnsiFlagFunctions DIMMED 'echo -en "\x1B[2m"' 'tput sgr0'
+	defineAnsiFlagFunctions BOLD 'tput bold' 'tput sgr0'
+else 
+	defineAnsiFlagFunctions STRIKEDOUT 'echo -en "\e[9m"' 'echo -en "\e[29m"'
+	defineAnsiFlagFunctions UNDERLINED 'tput smul' 'tput rmul'
+	defineAnsiFlagFunctions REVERSED 'echo -en "\e[7m"' 'echo -en "\e[27m"'
+	defineAnsiFlagFunctions DIMMED 'echo -en "\x1B[2m"' 'echo -en "\x1B[22m"'
+	defineAnsiFlagFunctions BOLD 'tput bold' 'echo -en "\e[21m"'
+fi
+
+function currentTrapCommand(){
+	signal=$1
+	trap -p $signal | sed 's/trap\s*--\s*'"'\(.*\)'"'\s'$signal'/\1/g'
+}
+
+#the following function wraps ssh remote command
+# where remote .bashrc is sourced after setting 
+# the variable to have .bashrc believe it is inside
+# an interactive session
+# the purpose is to load the environment variables
+# usually set in .bashrc
+function sshPeudoInteractiveBashCommand() {
+	sshOptions=""
+    if [ "$1" == "-f" ]; then
+            sshOptions="-f"
+            shift
+    fi
+    connectionString=$1
+    shift
+    ssh $sshOptions $connectionString 'set -i ; export PS1=something ;  source .bashrc ; '"$@"
+}
