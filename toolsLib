@@ -11,8 +11,8 @@
 # Usage     : platform=$(getPlatform)
 #
 function getPlatform() {
-	platform='unknown'
-	unamestr=`uname`
+	local platform='unknown'
+	local unamestr=`uname`
 	if [[ "$unamestr" == 'Linux' ]]; then
 		platform='linux'
 	elif [[ "$unamestr" == 'Darwin' ]]; then
@@ -27,14 +27,15 @@ platform=$(getPlatform)
 # TODO also check it's jdk from sun, not openjdk
 #
 function get_java_version() {
+	local _java
 	if type -p java >/dev/null; then
     	_java=java
-	elif [[ -n "$JAVA_HOME:-" ]] && [[ -x "$JAVA_HOME/bin/java" ]];  then
+	elif [[ "${JAVA_HOME:-}" != "" ]] && [[ -x "$JAVA_HOME/bin/java" ]];  then
     	_java="$JAVA_HOME/bin/java"
 	else
     	echo "-1"
 	fi
-    version=$("$_java" -version 2>&1 | awk -F '"' '/version/ {print $2}')
+    local version=$("$_java" -version 2>&1 | awk -F '"' '/version/ {print $2}')
     echo "$version"
 }
 
@@ -88,9 +89,9 @@ function unquietableLog() { quiet="false" log $@ ; }
 # option -n can be provided to avoid addition of final carriage return
 # option -- can be provided to request log processing from stdin
 function log() {
-	echoOpt="" 
+	local echoOpt="" 
 	if [ "${1:-}" == "-n" ] ; then
-		echoOpt="-n"
+		local echoOpt="-n"
 		shift
 	fi
 	if [ "${1:-}" == "--" ] ; then
@@ -120,11 +121,11 @@ function errecho() {
 # @return a string. 
 #
 function shortBashContext() {
-  	bashRootCommand=`basename ${0:-}`
-  	framesToIgnore=${1:-0}
-  	bashFile=`basename ${BASH_SOURCE[$((2+framesToIgnore))]}`
-  	bashLineNum=${BASH_LINENO[$((1+framesToIgnore))]}
-  	bashFuncName=${FUNCNAME[$((2+framesToIgnore))]}
+  	local bashRootCommand=`basename ${0:-}`
+  	local framesToIgnore=${1:-0}
+  	local bashFile=`basename ${BASH_SOURCE[$((2+framesToIgnore))]}`
+  	local bashLineNum=${BASH_LINENO[$((1+framesToIgnore))]}
+  	local bashFuncName=${FUNCNAME[$((2+framesToIgnore))]}
 
   	# Cedric ? a less verbose version here .. 
   	if [ "$bashRootCommand" == "$bashFile" ]; then
@@ -140,7 +141,7 @@ function shortBashContext() {
 
 function warn() { errecho $(FG YELLOW "WARNING: $*" ) ;}
 function error() { 
-	echoOpt="" 
+	local echoOpt="" 
 	if [ "${1:-}" == "-n" ] ; then
 		echoOpt="-n"
 		shift
@@ -150,7 +151,7 @@ function error() {
 			export errorContext=""
 			shift
 		else
-			nbFramesToIgnore=${2:-} 
+			local nbFramesToIgnore=${2:-} 
 			export errorContext=$(DIMMED "$(shortBashContext $nbFramesToIgnore)")
 		fi
 
@@ -161,7 +162,7 @@ function error() {
 		fi
 	else
 		if [ "${1:-}" == "--print-stack" ] ; then
-			printStack=true
+			local printStack=true
 			shift
 		fi
 		if [ "${1:-}" == "--no-context" ] ; then
@@ -190,7 +191,7 @@ function fatal() {
 # send them respectively to the "log --" filter an "error --" filter.
 # the overall return status is the return status of the command
 function loggedCommand() { 
-	command=("$@"); 
+	local command=("$@"); 
 	# on desactive le fichier de log pour éviter les doublons
 	# car on veut tout attraper à ce niveau ci (y compris les flots
 	# d'erreur non générés par des commandes normalisées...)
@@ -204,16 +205,18 @@ function debug() { echo "$@" | commonsLogger ; }
 
 # generic wait loop 
 function tryLoop() {
-	maxOverallWaitInSeconds=$1
-	waitBetweenRetriesInSeconds=$2
-	command=$3
-	waitingForObjectDescription=$4
-	startingTimestamp=`date +%s` 
+	local maxOverallWaitInSeconds=$1
+	local waitBetweenRetriesInSeconds=$2
+	local command=$3
+	local waitingForObjectDescription=$4
+	local startingTimestamp=`date +%s` 
+	local retryLimitTimestamp
 	let retryLimitTimestamp=startingTimestamp+maxOverallWaitInSeconds
-	succeeded=0
-	currentTimestamp=${startingTimestamp}
+	local succeeded=0
+	local currentTimestamp=${startingTimestamp}
 	eval "$command" && return 0
-	firstSleep=1
+	local firstSleep=1
+	local remainingWait
 	while [ ${currentTimestamp} -lt ${retryLimitTimestamp} ] ; do 
 		let remainingWait=retryLimitTimestamp-currentTimestamp
 		[ $firstSleep -ne 1 ] && errecho "Waiting for ${waitingForObjectDescription} (will wait ${remainingWait} seconds max)..."
@@ -234,7 +237,7 @@ function check_and_return_unique_file_from_pattern() {
 	namePattern=$1
 	lsOptions=${2:-}
 	#echo SEARCHING files=\$(ls ${lsOptions} "$namePattern" )
-	files="$(ls ${lsOptions} $namePattern )"
+	files=$(eval "ls ${lsOptions} $namePattern" )
 	local rc=0
 	if [ -z "${files}" ] ; then 
 		error "no file matching required pattern ${namePattern} !" 
@@ -256,9 +259,9 @@ function check_and_return_unique_file_from_pattern() {
 # the function resists to the absence of :port part
 # the second argument (optional) is a default value
 function hostFromHostColumnPort () {
-	toParse="$1"
-	defaultHost="${2:-}"
-	host=${toParse%%:*}
+	local toParse="$1"
+	local defaultHost="${2:-}"
+	local host=${toParse%%:*}
 	echo "${host:-${defaultHost}}"
 }
 
@@ -266,9 +269,9 @@ function hostFromHostColumnPort () {
 # the function resists to the absence of :port part
 # the second argument (optional) is a default value
 function portFromHostColumnPort () {
-	toParse="$1"
-	defaultPort="${2:-}"
-	port=${toParse##*:}
+	local toParse="$1"
+	local defaultPort="${2:-}"
+	local port=${toParse##*:}
 	if [ "$port" == "$toParse" ]; then 
 		# on gere le cas ou ":xxx" est absent
 		echo "${defaultPort}"
@@ -287,6 +290,7 @@ function convertParametersToStdoutLines() {
 }
 
 function bashArrayToLines() {
+	local line
 	for line in "$@" ; do
 		echo "$line"
 	done
@@ -296,6 +300,7 @@ function bashArrayToLines() {
 # the produced format is of the form : [ "value1", "value2", ... , "valuen" ]
 # the input list can be provided through the parameters, or through lines on stdin by specifying parameter '--'
 function listToJsonString() {
+	local input
 	if [ "${1:-}" == "--" ]; then
 		input="$(cat)"
 	else
@@ -312,42 +317,51 @@ logVarDefaultPrefix="        "
 logVarDefaultNamePadding=30
 #function to dump a variable name and its value
 function logVar() {
-	varName="$1"
-	leftPrefix="${2:-${logVarDefaultPrefix}}"
-	namePadding="${3:-${logVarDefaultNamePadding}}"
-	log "${leftPrefix}$(rightPadding ${namePadding} ${varName}) = \"`eval 'echo ${'$varName'}'`\""
+	local varName="$1"
+	local leftPrefix="${2:-${logVarDefaultPrefix}}"
+	local namePadding="${3:-${logVarDefaultNamePadding}}"
+	log "${leftPrefix}$(rightPadding ${namePadding} ${varName}) = \"${!varName}\""
 }
 
 
 #function to dump an array variable name and its values
 function logArrayVar() {
-	varName="$1"
-	leftPrefix="${2:-${logVarDefaultPrefix}}"
-	namePadding="${3:-${logVarDefaultNamePadding}}"
+	local varName="$1"
+	local leftPrefix="${2:-${logVarDefaultPrefix}}"
+	local namePadding="${3:-${logVarDefaultNamePadding}}"
 	log "${leftPrefix}$(rightPadding ${namePadding} ${varName}) = `eval 'listToJsonString "${'$varName'[@]}"'`"
 }
 
+#function to dump a variable name and its value without enclosing quotes
+function logRawVar() {
+	varName="$1"
+	leftPrefix="${2:-${logVarDefaultPrefix}}"
+	namePadding="${3:-${logVarDefaultNamePadding}}"	
+	log "${leftPrefix}$(rightPadding ${namePadding} ${varName}) = ${!varName}"
+}
+
+
 
 function waitForTcpPortAvailability() {
-	host=$1
-	port=$2
-	sleepBetweenTrials=${3:-3}
-	maxOverallWaitInSeconds=${4:-60}
+	local host=$1
+	local port=$2
+	local sleepBetweenTrials=${3:-3}
+	local maxOverallWaitInSeconds=${4:-60}
 	tryLoop  $maxOverallWaitInSeconds $sleepBetweenTrials "nc -z $1 $2" "Tcp port $1:$2 availability"
 }
 
 # function to wait for an answer without HTTP error code, from a remote HTTP
 function waitForHttpGetAvailable () {
-	httpUrl="$1"
-	sleepStepInSeconds="${2:-3}"
-	maxOverallWaitInSeconds="${3:-60}"
-	command='curl -s -o /dev/null --noproxy '*' --retry 0 -XGET "'${httpUrl}'"'
+	local httpUrl="$1"
+	local sleepStepInSeconds="${2:-3}"
+	local maxOverallWaitInSeconds="${3:-60}"
+	local command='curl -s -o /dev/null --noproxy '*' --retry 0 -XGET "'${httpUrl}'"'
 	tryLoop $maxOverallWaitInSeconds $sleepStepInSeconds "$command" "HTTP URL '${httpUrl}'"
 }
 
 function waitForPingSuccess() {
- hostToWait="$1"
- maxWaitInSeconds=${2:-5}
+ local hostToWait="$1"
+ local maxWaitInSeconds=${2:-5}
  log -n "Waiting for PING answer from '${hostToWait}'... "
 ( ping -W ${maxWaitInSeconds} -c 1 -q ${hostToWait} > /dev/null  ) || fatal "unable to ping server '${hostToWait}'"
  log "OK"
@@ -355,15 +369,15 @@ function waitForPingSuccess() {
 
 function waitForSshSuccess() {
 	# usage : waitForSshSuccess [user]@<host> [<maxWaitInSeconds>] [ -c 'remote command to launch']
- hostToWait="$1"
- command="echo """""
- maxWaitInSeconds=10
+ local hostToWait="$1"
+ local command="echo """""
+ local maxWaitInSeconds=10
  shift
  while [ $# -gt 0 ] ; do
 
  	if [ "$1" == -c ]; then
  		command="$2"
- 		commandLog=" using remote command '$command'"
+ 		local commandLog=" using remote command '$command'"
  		shift 2
  	else
 		maxWaitInSeconds=$2
@@ -376,7 +390,7 @@ done
 
 #returns local IP addresses, one by line (including loopback localhost interface)
 function localIpV4Addresses() {
-	platform=$(getPlatform)
+	local platform=$(getPlatform)
 	if [ "$platform" == "mac" ]; then
 		ifconfig | awk '/inet / {print $2}'
 	else
@@ -387,11 +401,13 @@ function localIpV4Addresses() {
 #for each argument received (or line from stdin, if "--" parameter is provided
 	# returns the corresponding V4 IP (or the input, if already an IP)
 function resolveIpV4Host() {
+	local input
 	if [ "${1:-}" == "--" ]; then
 		input="$(cat)"
 	else
 		input=$*
 	fi
+	local hostnameOrIp
 	for hostnameOrIp in $input ; do
 		if ( echo ${hostnameOrIp} | grep -q '^[a-zA-Z]') ; then
 			# we have a hostname
@@ -412,9 +428,9 @@ function resolveIpV4Host() {
 # function which return value indicates if at least one word matches
 # in two lists,  with separators beeing either newlines or whitespace
 function listsHaveNonEmptyIntersection() {
-	aList=$1
-	bList=$2
-	intersection=$(comm -12 <(echo "$aList" | sed 's/\s\+/\n/g' | sort -u) <(echo "$bList" | sed 's/\s\+/\n/g'| sort -u))
+	local aList=$1
+	local bList=$2
+	local intersection=$(comm -12 <(echo "$aList" | sed 's/\s\+/\n/g' | sort -u) <(echo "$bList" | sed 's/\s\+/\n/g'| sort -u))
 	[ "$intersection" != "" ]
 }
 
@@ -422,12 +438,12 @@ function listsHaveNonEmptyIntersection() {
 # if only one parameter is provided, stdin is used as source. If more than one, the parameters are processed instead
 defaultPaddingChar=' '
 function rightPadding() {
-	paddingChar=$defaultPaddingChar
+	local paddingChar=$defaultPaddingChar
 	if [ "${1:-}" == "--padding-char" ]; then
 		paddingChar=${2:-.}
 		shift 2
 	fi
-	desiredLength=${1}
+	local desiredLength=${1}
 	if [ $# == 1 ] ; then
 		sed -e :a -e 's/^.\{1,'${desiredLength}'\}$/& /;ta'
 	else
@@ -443,13 +459,14 @@ function rightPadding() {
 # hostnames in the list are resolved to IPV4 names automatically, and port number prefixes are ignored
 # (such as myhost:3000,otherhost:18000). separators can be spaces or commas
 function currentHostIsInHostList() {
-	ipsToScan=$(echo "${*:-}" | tr "," " " | sed 's/:[0-9]*//g' | resolveIpV4Host -- )
+	local ipsToScan=$(echo "${*:-}" | tr "," " " | sed 's/:[0-9]*//g' | resolveIpV4Host -- )
     listsHaveNonEmptyIntersection "${ipsToScan}" "$(localIpV4Addresses)"
 }
 
 function queryJsonConf() {
-    jsonQuery=$1
-    jsonData=${2:-}
+    local jsonQuery=$1
+    local jsonData=${2:-}
+    local dataSource
     if [ "${jsonData}" == "" ]; then
     	if [ "${JSON_CONFIG:-}" == "" ]; then
     		error "JSON_CONFIG variable is not define to provide a default json configuration source file for 'queryJsonConf' function."
@@ -665,6 +682,113 @@ function sshWithLocalizedOutput() {
 }
 
 
+# the following function receives a "stdout" prefix string as a parameter 1
+# and a "stderr" prefix string as a parameter 1
+# other arguments are a command line string to run
+# The result is that all outputs (stdout and stderr) are prefixed by the provided prefixes
+# WITH stdout still being separated from stderr at the end.
+# because sed is used, prefixes cannot contain the sed separator
+# by default, this separator is '/' but it can be changed by providing optional
+# option '--separator <character>' before first prefix
+function prefixCommandOutput(){
+	if [ $# -lt 3 ]; then
+		error "prefixCommandOutput() takes at least 3 arguments"
+		exit 1
+	fi
+	local sep="/"
+	if [ "$1" == "--separator" ]; then
+		sep="$2"
+		shift 2
+	fi
+	if [ $# -lt 3 ]; then
+		error "prefixCommandOutput() takes at least 3 arguments in addition to '--separator <char>'."
+		exit 1
+	fi
+	
+	stdoutPrefix="$1"
+	stderrPrefix="$2"
+	shift 2
+	 ( ( ( eval "$*"  | sed "s${sep}^${sep}${stdoutPrefix}${sep}g" && exit ${PIPESTATUS[0]})  3>&1 1>&2 2>&3 )  | sed "s${sep}^${sep}$stderrPrefix${sep}g" && exit ${PIPESTATUS[0]})  3>&1 1>&2 2>&3 	
+	 return $?
+}
+	
+# parallel execution of the same command for several parameters sets
+#   parallelExecution [ --names <namesArray variable name> ] -- command line
+#   in the command line, any string of the form {:::varname::}' will be substituted by
+#   successive values from the shell array which variable name is varname
+#   if --names is provided, then the shell array with this name is used as source
+#   for identifying the process instances (in output and result status). If this option
+# is not present, first substitution variable wil be used instead
+function parallelExecution() {
+	commandString=$@
+	local beginTag="{:::"
+	local endTag=":::}"
+	
+		
+	function firstVariableInString() {
+		local theString="$1"
+		local leftAndVar="${theString%%${endTag}*}" 
+		if [ "$leftAndVar" == "$theString" ]; then
+			echo ""
+		else
+			varName="${leftAndVar##*${beginTag}}"
+			echo "$varName"
+		fi
+	}
+		
+	function getSubstitutedCommand() {
+		local argsIndex=$1
+		shift
+		local 	theCommand="$@"
+		
+		 
+		
+		local varName=$(firstVariableInString "$theCommand")
+		while [ "$varName" != "" ]; do
+			valueRef=$varName[$argsIndex]
+			value=${!valueRef}
+			local tagSearch="${beginTag}${varName}${endTag}"
+			theCommand=${theCommand/${tagSearch}/${value}}
+			varName=$(firstVariableInString "$theCommand")
+		done
+		echo "$theCommand"
+	}
+
+	local PIDS=()
+	
+	
+	local nameVar=$(firstVariableInString "$commandString")
+	local namesRef=$nameVar[@]
+	local names=("${!namesRef}")
+	local namesCount=${#names[@]}
+	local index
+	local lastIndex
+	let lastIndex=namesCount-1
+
+	
+	for index in $(seq 0 $lastIndex); do
+		local instanceName="${names[index]}"
+		local commandInstance=$(getSubstitutedCommand $index "$commandString" )
+		( prefixCommandOutput "${instanceName}> " "! ${instanceName} 2> " "$commandInstance" ) &
+		PIDS+=( $! )
+	done
+
+	if ! wait ${PIDS[@]} ; then
+		local l=0
+		local name
+		for name in "${names[@]}"; do
+			wait ${PIDS[${l}]}
+			local rc=$?
+			if [ $rc -ne 0 ]; then
+				error --no-context "Execution for '$name' returned '$rc'."
+			fi
+			let l=l+1
+		done
+		error "At least one execution failed on command."
+		return 1
+	fi
+	return 0
+}
 
 
 # parallel execution of the same command for several hosts
@@ -856,4 +980,31 @@ function sshPeudoInteractiveBashCommand() {
     connectionString=$1
     shift
     ssh $sshOptions $connectionString 'set -i ; export PS1=something ;  source .bashrc ; '"$@"
+}
+
+# function that wraps curl
+# in order to send 0 as return code if http request succeeded
+# but 254 if request 'failed' at HTTP level (3xx, 4xx, 5xx)
+# in all cases, 'httpReturnCode' variable is set
+# the curl is silenced by -s
+# and output is sent to stdout (via a temporary file)
+# parameters are sent to curl
+EXEC_HTTP_REQUEST_HTTP_FAILURE=254
+execHttpRequest() {
+	local tmpFile=$(mktemp -t curl-output-XXXXXXXXXXXXX.tmp)
+	httpReturnCode=$(curl -sw "%{http_code}" "$@" -o "$tmpFile" )
+	local curlRc=$?
+	if [ $curlRc -ne 0 ]; then
+		httpReturnCode=""
+		rm -f "$tmpFile"
+		return $curlRc
+	fi
+	# output file might not exist if curl failed, or if -o was used by the caller
+	cat "$tmpFile" 2> /dev/null
+	rm -f "$tmpFile"
+	if [ $httpReturnCode -ge 300 ]; then
+		return $EXEC_HTTP_REQUEST_HTTP_FAILURE
+	else
+		return 0
+	fi
 }
